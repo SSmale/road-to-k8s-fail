@@ -1,0 +1,42 @@
+---
+- name: Install Nginx
+  hosts: primaryControlPlane
+  become: true
+  become_user: k8sadmin
+
+  tasks:
+    - name: Install Helm
+      become: true
+      community.general.snap:
+        name: helm
+        classic: true
+        state: present
+        channel: latest/stable
+    - name: Create config file
+      ansible.builtin.command: kubectl create ns ingress-nginx
+      register: kube_ns_helm_command # <- Registers the command output.
+      changed_when: kube_ns_helm_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    - name: Create config file
+      ansible.builtin.command: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+      register: helm_add_command # <- Registers the command output.
+      changed_when: helm_add_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    - name: Create config file
+      ansible.builtin.command: helm show values ingress-nginx/ingress-nginx > ngingress-metal-custom.yaml
+      register: helm_conf_command # <- Registers the command output.
+      changed_when: helm_conf_command.rc != 0 # <- Uses the return code to define when the task has changed.
+
+    - name: Set hostNetwork to false
+      ansible.builtin.lineinfile:
+        path: ngingress-metal-custom.yaml
+        regexp: '^hostNetwork:'
+        line: 'hostNetwork: false'
+    - name: Set hostNetwork to false
+      ansible.builtin.lineinfile:
+        path: ngingress-metal-custom.yaml
+        regexp: '^kind: '
+        line: 'kind: DaemonSet'
+    - name: Set hostNetwork to false
+      ansible.builtin.replace:
+        dest: ngingress-metal-custom.yaml
+        regexp: '(^hostPort:[^<]*)(enabled: false)'
+        replace: '\2enabled: true'

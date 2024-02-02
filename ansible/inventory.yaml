@@ -1,0 +1,19 @@
+---
+all:
+  vars:
+    ansible_user: ubuntu
+    ansible_ssh_private_key_file: 
+primaryControlPlane:
+  hosts:
+    arm-0.DOMAIN.NAME:
+secondaryControlPlane:
+  hosts:
+    arm-1.DOMAIN.NAME:
+controlPlanes:
+  hosts:
+    arm-0.DOMAIN.NAME:
+    arm-1.DOMAIN.NAME:
+workers:
+  hosts:
+    amd-0.DOMAIN.NAME:
+    amd-1.DOMAIN.NAME:

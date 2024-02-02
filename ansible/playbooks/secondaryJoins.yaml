@@ -1,0 +1,108 @@
+---
+- name: Control Plane Install and config
+  hosts: primaryControlPlane
+  become: true # Run as root
+
+  tasks:
+    - name: Add the k8 Group
+      ansible.builtin.group:
+        name: k8sadmin
+    - name: Add the k8User
+      ansible.builtin.user:
+        name: k8sadmin
+        group: k8sadmin
+    - name: Get the cert
+      changed_when: false
+      ansible.builtin.command: kubeadm certs certificate-key
+      register: kubernetes_cert_command
+    - name: Check if the master node is already initialized
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubeadm_init
+    - name: Initialize the master node
+      ansible.builtin.command: >
+        kubeadm init
+        --apiserver-cert-extra-sans=DOMAIN.NAME,arm-0.DOMAIN.NAME,arm-1.DOMAIN.NAME
+        --pod-network-cidr=10.32.0.0/12
+        --control-plane-endpoint=DOMAIN.NAME
+        --upload-certs
+        --certificate-key={{ kubernetes_cert_command.stdout_lines[0] }}
+      when: not kubeadm_init.stat.exists # Only run if the master node is not already initialized
+      register: kube_init_command # <- Registers the command output.
+      changed_when: kube_init_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    - name: Create .kube directory
+      ansible.builtin.file:
+        path: /home/k8sadmin/.kube
+        state: directory
+        owner: k8sadmin
+        group: k8sadmin
+        mode: u=rwx,g=rx,o=rx
+      when: not kubeadm_init.stat.exists # Only run if the master node is not already initialized
+    - name: Copy the kube config file
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/k8sadmin/.kube/config
+        remote_src: true
+        owner: k8sadmin
+        group: k8sadmin
+        mode: u=rw,g=r,o=r
+      when: not kubeadm_init.stat.exists # Only run if the master node is not already initialized
+    - name: Get the token for joining the worker nodes
+      become: true
+      become_user: k8sadmin
+      changed_when: false
+      ansible.builtin.command: kubeadm token create  --print-join-command
+      register: kubernetes_join_command
+    - name: Install
+      ansible.builtin.command: >
+        kubectl apply -f https://github.com/weaveworks/weave/releases/download/v2.8.1/weave-daemonset-k8s-1.11.yaml
+      become: true
+      become_user: k8sadmin
+      register: pod_command # <- Registers the command output.
+      changed_when: pod_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    - name: Display registered output
+      ansible.builtin.debug:
+        var: kubernetes_join_command.stdout_lines
+    - name: Display kubeconf output
+      ansible.builtin.debug:
+        var: kubernetes_join_command.stdout_lines
+    - name: Create dummy host to store variable for node config
+      ansible.builtin.add_host:
+        name: 'DUMMY_HOST'
+        JOIN_COMMAND: '{{ kubernetes_join_command.stdout_lines[0] }}'
+        CERT_KEY: '{{ kubernetes_cert_command.stdout_lines[0] }}'
+- name: Join the secondary control plane to the cluster
+  hosts: secondaryControlPlane
+  become: true # Run as root
+
+  tasks:
+    - name: Check if the node is already joined
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubeadm_join
+    - name: Join the  secondary control plane node to the cluster
+      ansible.builtin.command: "{{ hostvars['DUMMY_HOST']['JOIN_COMMAND'] }} --control-plane --certificate-key {{ hostvars['DUMMY_HOST']['CERT_KEY'] }}"
+      when: not kubeadm_join.stat.exists # Only run if the worker node is not already joined
+      changed_when: false
+
+- name: Join the worker nodes to the cluster
+  hosts: workers
+  become: true # Run as root
+
+  tasks:
+    - name: Check if the worker node is already joined
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubeadm_join
+    - name: Join the worker nodes to the cluster
+      ansible.builtin.command: "{{ hostvars['DUMMY_HOST']['JOIN_COMMAND'] }}"
+      when: not kubeadm_join.stat.exists # Only run if the worker node is not already joined
+      changed_when: false
+
+- name: Reboot hosts
+  hosts: all
+  become: true # Run as root
+
+  tasks:
+    - name: Reboot
+      ansible.builtin.reboot:

@@ -1,0 +1,8 @@
+---
+- name: Reboot hosts
+  hosts: all
+  become: true # Run as root
+
+  tasks:
+    - name: Reboot
+      ansible.builtin.reboot:

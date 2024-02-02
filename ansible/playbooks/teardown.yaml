@@ -1,0 +1,17 @@
+- name: Teardown
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Remove Links
+      ansible.builtin.command: kubeadm reset -f
+    - name: Remove Links
+      ansible.builtin.command: rm -rf /etc/kubernetes
+    - name: Remove Links
+      ansible.builtin.command: rm -rf /etc/cni/net.d
+    - name: Remove Links
+      ansible.builtin.command: rm -rf /var/lib/kubelet
+    - name: Remove Links
+      ansible.builtin.command: rm -rf /var/lib/etcd
+    - name: Remove Links
+      ansible.builtin.command: rm -rf $HOME/.kube

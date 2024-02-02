@@ -1,0 +1,184 @@
+---
+- name: Main Playbook
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Update the /etc/hosts file with node name
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        create: true
+        block: |
+          XXX.XXX.XXX.XXX DOMAIN.NAME
+          XXX.XXX.XXX.XXX DOMAIN.NAME
+        mode: u=rw,g=r,o=r
+    - name: Update the firewall rules
+      ansible.builtin.shell: |
+        ## save existing rules
+        iptables-save > ~/iptables-rules
+        ## modify rules, remove drop and reject lines
+        grep -v "DROP" iptables-rules > tmpfile && mv tmpfile iptables-rules-mod
+        grep -v "REJECT" iptables-rules-mod > tmpfile && mv tmpfile iptables-rules-mod
+        ## apply the modifications
+        iptables-restore < ~/iptables-rules-mod
+        ## check
+        iptables -L
+        ## save the changes
+        netfilter-persistent save
+        systemctl restart iptables
+      register: firewall_command # <- Registers the command output.
+      changed_when: firewall_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    - name: Configure containerd
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/containerd.conf
+        mode: u=rw,g=r,o=r
+        content: |
+          overlay
+          br_netfilter
+    - name: Load overlay Module
+      community.general.modprobe:
+        name: overlay
+    - name: Load br_netfilter Module
+      community.general.modprobe:
+        name: br_netfilter
+    - name: Configure kernel
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/kubernetes.conf
+        mode: u=rw,g=r,o=r
+        content: |
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.ipv4.ip_forward = 1
+    - name: Apply changes
+      ansible.builtin.command: sudo sysctl --system
+      register: sysctl_restart_command # <- Registers the command output.
+      changed_when: sysctl_restart_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    - name: Update Hosts
+      ansible.builtin.apt:
+        name: '*'
+        update_cache: true
+        force_apt_get: true
+        cache_valid_time: 3600
+    - name: Upgrade Hosts
+      ansible.builtin.apt:
+        name: '*'
+        state: latest
+        only_upgrade: true # <- Upgrades but does not install additional packages.
+    - name: Install base packages on Hosts
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+          - gnupg
+          - gnupg-agent
+          - software-properties-common
+          - acl
+        state: present
+        update_cache: true
+    - name: Add Docker Module Repository
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: [deb]
+        uris: 'https://download.docker.com/linux/{{ ansible_distribution | lower }}'
+        signed_by: 'https://download.docker.com/linux/{{ ansible_distribution | lower }}/gpg'
+        suites: ['{{ ansible_distribution_release | lower }}']
+        components: [stable]
+        state: present
+        enabled: true
+    - name: Install containerd
+      ansible.builtin.apt:
+        name: ['containerd.io']
+        state: present
+        update_cache: true
+    - name: Ensure containerd config directory exists.
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: u=rw,g=r,o=r
+      register: containerd_dir
+    - name: Get defaults from containerd.
+      ansible.builtin.command: containerd config default
+      changed_when: false
+      register: containerd_config_default
+
+    - name: Prepare containerd/config.toml from default config
+      ansible.builtin.copy:
+        dest: /tmp/containerd_config.toml
+        content: '{{ containerd_config_default.stdout }}'
+        mode: u=rw,g=r,o=r
+      changed_when: false
+
+    - name: Set Cgroup driver to systemd
+      ansible.builtin.lineinfile:
+        insertafter: '.*\[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options\]$'
+        line: '            SystemdCgroup = true'
+        state: present
+        path: /tmp/containerd_config.toml
+      changed_when: false
+
+    - name: Make sure  SystemdCgroup = false is not set
+      ansible.builtin.lineinfile:
+        path: /tmp/containerd_config.toml
+        state: absent
+        line: '            SystemdCgroup = false'
+      changed_when: false
+
+    - name: Copy config.toml to /etc/containerd
+      ansible.builtin.copy:
+        remote_src: true
+        src: /tmp/containerd_config.toml
+        dest: /etc/containerd/config.toml
+        mode: u=rw,g=r,o=r
+
+    - name: Cleanup temporary file
+      ansible.builtin.file:
+        path: /tmp/containerd_config.toml
+        state: absent
+      changed_when: false
+    - name: Restart and enable containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+    - name: Disable swap for current session
+      ansible.builtin.command: swapoff -a
+      register: swap_off_command # <- Registers the command output.
+      changed_when: swap_off_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    - name: Disable swap permanently, persist reboots
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^(\s*)([^#\n]+\s+)(\w+\s+)swap(\s+.*)$'
+        replace: '#\1\2\3swap\4'
+        backup: true
+    - name: Add Kubernetes APT repository
+      ansible.builtin.deb822_repository:
+        name: kubernetes
+        types: [deb]
+        uris: 'https://apt.kubernetes.io'
+        signed_by: 'https://packages.cloud.google.com/apt/doc/apt-key.gpg'
+        suites: [kubernetes-xenial]
+        components: [main]
+        state: present
+        enabled: true
+    - name: Install kubernetes
+      ansible.builtin.apt:
+        name:
+          - 'kubelet'
+          - 'kubeadm'
+          - 'kubectl'
+        state: present
+        update_cache: true
+    - name: Hold kubelet package at current version
+      ansible.builtin.dpkg_selections:
+        name: 'kubelet'
+        selection: hold
+    - name: Hold kubeadm package at current version
+      ansible.builtin.dpkg_selections:
+        name: 'kubeadm'
+        selection: hold
+    - name: Hold kubectl package at current version
+      ansible.builtin.dpkg_selections:
+        name: 'kubectl'
+        selection: hold

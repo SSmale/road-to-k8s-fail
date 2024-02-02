@@ -1,0 +1,47 @@
+---
+- name: Install MetalLB
+  hosts: primaryControlPlane
+  become: true
+  become_user: k8sadmin
+
+  tasks:
+    - name: Write conf file
+      ansible.builtin.copy:
+        dest: ~/metallb-ipaddresses.yaml
+        mode: u=rw,g=r,o=r
+        content: |
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: first-pool
+            namespace: metallb-system
+          spec:
+            addresses:
+              - XXX.XXX.XXX.XXX/XX
+              - XXX.XXX.XXX.XXX/XX
+    - name: Write conf file
+      ansible.builtin.copy:
+        dest: ~/metallb-layer2.yaml
+        mode: u=rw,g=r,o=r
+        content: |
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: first-advert
+            namespace: metallb-system
+    - name: Apply manifest
+      ansible.builtin.command: kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.13.12/config/manifests/metallb-native.yaml
+      register: manifest_command # <- Registers the command output.
+      changed_when: manifest_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    - name: Apply ipaddresses
+      ansible.builtin.command: kubectl apply -f ~/metallb-ipaddresses.yaml
+      register: ipaddresses_command # <- Registers the command output.
+      changed_when: ipaddresses_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    - name: Apply layer2
+      ansible.builtin.command: kubectl apply -f ~/metallb-layer2.yaml
+      register: layer2_command # <- Registers the command output.
+      changed_when: layer2_command.rc != 0 # <- Uses the return code to define when the task has changed.
+    # - name: Apply secret
+    #   ansible.builtin.command: kubectl create secret generic -n metallb-system memberlist --from-literal=secretkey="$(openssl rand -base64 128)"
+    #   register: secret_command # <- Registers the command output.
+    #   changed_when: secret_command.rc != 0 # <- Uses the return code to define when the task has changed.
